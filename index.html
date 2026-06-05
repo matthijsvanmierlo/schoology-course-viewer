@@ -245,6 +245,7 @@
                 Array.from(doc.querySelectorAll('resource')).forEach(res => {
                     const id = res.getAttribute('identifier');
                     const files = Array.from(res.querySelectorAll('file')).map(f => f.getAttribute('href'));
+                    const dependencies = Array.from(res.querySelectorAll('dependency')).map(d => d.getAttribute('identifierref'));
                     // Ensure href matches a file in the file list if possible, or use the first file if href is missing
                     let href = res.getAttribute('href');
                     if (!href && files.length > 0) href = files[0];
@@ -252,7 +253,8 @@
                     resources[id] = {
                         type: res.getAttribute('type'),
                         href: href,
-                        files: files
+                        files: files,
+                        dependencies: dependencies
                     };
                 });
 
@@ -487,7 +489,9 @@
             
             iframe.src = "about:blank";
             iframe.classList.add('hidden');
-            document.getElementById('preview-placeholder').classList.remove('hidden');
+            const placeholder = document.getElementById('preview-placeholder');
+            placeholder.className = "absolute inset-0 flex flex-col items-center justify-center text-slate-400 p-8 text-center bg-slate-50 z-0";
+            placeholder.classList.remove('hidden');
             document.getElementById('open-new-window-btn').classList.add('hidden');
             document.getElementById('download-file-btn').classList.add('hidden');
             document.getElementById('attachments-footer').classList.add('hidden');
@@ -560,12 +564,49 @@
             document.getElementById('active-type').innerText = res.type || 'Resource';
 
             // Handle Attachments
+            let allAttachments = [];
             if (res.files && res.files.length > 0) {
-                const attachments = res.files.filter(f => f !== res.href); // Exclude main file
-                if (attachments.length > 0) {
-                    attachmentsFooter.classList.remove('hidden');
-                    renderAttachments(attachments);
+                res.files.forEach(f => {
+                    if (f !== res.href) allAttachments.push({ type: 'file', path: f, name: f.split('/').pop() });
+                });
+            }
+            if (res.dependencies && res.dependencies.length > 0) {
+                for (const depRef of res.dependencies) {
+                    const depRes = resources[depRef];
+                    if (depRes) {
+                        if (depRes.type === 'imswl_xmlv1p1' || depRes.type === 'imswl_xmlv1p2' || depRes.type === 'imswl_xmlv1p3' || (depRes.type && depRes.type.includes('imswl'))) {
+                            try {
+                                let url = null;
+                                const fileContent = await currentZip.file(depRes.href).async("string");
+                                const xmlDoc = new DOMParser().parseFromString(fileContent, "text/xml");
+                                url = xmlDoc.querySelector('url')?.getAttribute('href') ||
+                                      xmlDoc.querySelector('check_link_url')?.getAttribute('href') ||
+                                      xmlDoc.querySelector('iframe_url')?.getAttribute('href');
+                                if (!url && fileContent.includes('http')) {
+                                     const match = fileContent.match(/https?:\/\/[^"'\s<]+/);
+                                     if (match) url = match[0];
+                                }
+                                if (url) {
+                                    let linkTitle = xmlDoc.querySelector('title')?.textContent || url;
+                                    allAttachments.push({ type: 'link', url: url, name: linkTitle });
+                                }
+                            } catch (e) {
+                                console.error("Error parsing dependency link:", e);
+                            }
+                        } else if (depRes.type === 'webcontent' || (depRes.files && depRes.files.length > 0)) {
+                            // File dependency
+                            const f = depRes.href || (depRes.files && depRes.files[0]);
+                            if (f && f !== res.href) {
+                                allAttachments.push({ type: 'file', path: f, name: f.split('/').pop() });
+                            }
+                        }
+                    }
                 }
+            }
+
+            if (allAttachments.length > 0) {
+                attachmentsFooter.classList.remove('hidden');
+                renderAttachments(allAttachments);
             }
 
             // Handler: Web Links (IMS WL)
@@ -729,14 +770,16 @@
                 openWindowBtn.classList.remove('hidden');
 
                 // Update attachments footer to hide embedded files
-                if (res.files && res.files.length > 0) {
-                    const standaloneAttachments = res.files.filter(f => f !== res.href && !embeddedPaths.has(f));
+                if (allAttachments && allAttachments.length > 0) {
+                    const standaloneAttachments = allAttachments.filter(a => a.type !== 'file' || !embeddedPaths.has(a.path));
                     if (standaloneAttachments.length > 0) {
                         attachmentsFooter.classList.remove('hidden');
                         renderAttachments(standaloneAttachments);
                     } else {
                         attachmentsFooter.classList.add('hidden');
                     }
+                } else {
+                    attachmentsFooter.classList.add('hidden');
                 }
             }
             // Handler: Images
@@ -819,6 +862,7 @@
 
                 iframe.classList.add('hidden');
                 placeholder.innerHTML = htmlOutput;
+                placeholder.className = "absolute inset-0 overflow-y-auto bg-slate-50 z-0 p-4 sm:p-8 block";
                 placeholder.classList.remove('hidden');
                 lucide.createIcons();
             }
@@ -871,6 +915,7 @@
                             ${displayHtml}
                         </div>
                     </div>`;
+                placeholder.className = "absolute inset-0 overflow-y-auto bg-slate-50 z-0 p-4 sm:p-8 block";
                 placeholder.classList.remove('hidden');
                 lucide.createIcons();
             }
@@ -896,27 +941,35 @@
         function renderAttachments(files) {
             const list = document.getElementById('attachment-list');
             list.innerHTML = '';
-            files.forEach(path => {
-                const name = path.split('/').pop();
+            files.forEach(attachment => {
+                const isLink = attachment.type === 'link';
+                const name = attachment.name;
+                const icon = isLink ? 'link' : 'file';
+                const actionIcon = isLink ? 'external-link' : 'download';
+
                 const item = document.createElement('div');
                 item.className = "flex items-center gap-2 px-3 py-2 rounded-lg bg-slate-100 hover:bg-blue-50 cursor-pointer transition-all border border-slate-200 hover:border-blue-200 group";
                 item.innerHTML = `
-                    <i data-lucide="file" class="w-3 h-3 text-slate-500 group-hover:text-blue-500"></i>
+                    <i data-lucide="${icon}" class="w-3 h-3 text-slate-500 group-hover:text-blue-500"></i>
                     <span class="text-[10px] font-bold text-slate-600 truncate max-w-[150px]">${name}</span>
-                    <i data-lucide="download" class="w-3 h-3 text-slate-300 group-hover:text-blue-500 ml-2"></i>
+                    <i data-lucide="${actionIcon}" class="w-3 h-3 text-slate-300 group-hover:text-blue-500 ml-2"></i>
                 `;
                 item.onclick = async () => {
-                    const file = currentZip.file(path);
-                    if (file) {
-                        const blob = await file.async("blob");
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement('a');
-                        a.href = url;
-                        a.download = name;
-                        document.body.appendChild(a);
-                        a.click();
-                        document.body.removeChild(a);
-                        setTimeout(() => URL.revokeObjectURL(url), 100);
+                    if (isLink) {
+                        window.open(attachment.url, '_blank');
+                    } else {
+                        const file = currentZip.file(attachment.path);
+                        if (file) {
+                            const blob = await file.async("blob");
+                            const url = URL.createObjectURL(blob);
+                            const a = document.createElement('a');
+                            a.href = url;
+                            a.download = name;
+                            document.body.appendChild(a);
+                            a.click();
+                            document.body.removeChild(a);
+                            setTimeout(() => URL.revokeObjectURL(url), 100);
+                        }
                     }
                 };
                 list.appendChild(item);
