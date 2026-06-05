@@ -490,8 +490,13 @@
             iframe.src = "about:blank";
             iframe.classList.add('hidden');
             const placeholder = document.getElementById('preview-placeholder');
+            placeholder.innerHTML = `
+                <i data-lucide="file-search" class="w-12 h-12 opacity-10 mb-4"></i>
+                <p id="placeholder-text" class="text-sm">Select a resource to preview</p>
+            `;
             placeholder.className = "absolute inset-0 flex flex-col items-center justify-center text-slate-400 p-8 text-center bg-slate-50 z-0";
             placeholder.classList.remove('hidden');
+            lucide.createIcons();
             document.getElementById('open-new-window-btn').classList.add('hidden');
             document.getElementById('download-file-btn').classList.add('hidden');
             document.getElementById('attachments-footer').classList.add('hidden');
