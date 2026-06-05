@@ -131,12 +131,16 @@
         <div id="app-content" class="hidden flex w-full h-full relative">
             <!-- Sidebar Explorer -->
             <aside id="sidebar" class="sidebar-visible absolute inset-0 md:relative md:translate-x-0 w-full md:w-80 border-r border-slate-200 bg-white flex flex-col">
-                <div class="p-4 border-b border-slate-100 flex flex-col gap-1 bg-slate-50/50">
+                <div class="p-4 border-b border-slate-100 flex flex-col gap-2 bg-slate-50/50 shrink-0">
                     <div class="flex items-center justify-between">
                         <span class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Navigation</span>
                         <span id="item-count" class="text-[10px] font-bold text-blue-500"></span>
                     </div>
                     <h3 id="current-root-title" class="text-xs font-bold text-slate-800 truncate">Collection Name</h3>
+                    <div class="relative mt-1">
+                        <i data-lucide="search" class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400"></i>
+                        <input type="text" id="search-input" placeholder="Search materials..." oninput="onSearchInput(event)" class="w-full bg-white border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-700 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all placeholder:text-slate-400">
+                    </div>
                 </div>
                 <div id="tree-container" class="flex-1 overflow-y-auto custom-scrollbar p-2 pb-24"></div>
             </aside>
@@ -191,6 +195,7 @@
         let assetBlobs = []; 
         let organizations = []; 
         let currentSelection = { ref: null, title: null, href: null, type: null };
+        let searchIndex = [];
 
         window.onload = () => lucide.createIcons();
 
@@ -261,6 +266,9 @@
                 });
 
                 document.getElementById('dropzone').classList.add('hidden');
+
+                // Build search index in background
+                buildSearchIndex();
                 
                 if (organizations.length > 1) renderLibraryGrid();
                 else if (organizations.length === 1) loadCollection(0);
@@ -322,27 +330,126 @@
             lucide.createIcons();
         }
 
+        async function buildSearchIndex() {
+            searchIndex = [];
+            for (const [id, res] of Object.entries(resources)) {
+                let content = "";
+                if (res.href && (res.href.endsWith('.html') || res.href.endsWith('.htm') || res.href.endsWith('.xml'))) {
+                    try {
+                        const file = currentZip.file(res.href);
+                        if (file) {
+                            const text = await file.async("string");
+                            // extremely basic html/xml tag stripping for search
+                            content = text.replace(/<[^>]*>?/gm, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
+                        }
+                    } catch (e) {
+                        console.error("Error indexing", res.href, e);
+                    }
+                }
+                searchIndex.push({ id, content });
+            }
+        }
+
+        function onSearchInput(e) {
+            const query = e.target.value.toLowerCase().trim();
+            const treeContainer = document.getElementById('tree-container');
+
+            if (!query) {
+                // Reset all
+                treeContainer.querySelectorAll('.tree-node').forEach(el => {
+                    el.classList.remove('hidden');
+                });
+                treeContainer.querySelectorAll('.folder-children').forEach(el => {
+                    el.classList.add('hidden');
+                });
+                treeContainer.querySelectorAll('.folder-toggle-icon').forEach(icon => {
+                    icon.style.transform = 'rotate(0deg)';
+                });
+                return;
+            }
+
+            // Find matching refs based on title and content
+            const allItems = Array.from(treeContainer.querySelectorAll('.tree-node'));
+            allItems.forEach(el => el.classList.add('hidden')); // hide all initially
+
+            const matchSet = new Set();
+
+            allItems.forEach(el => {
+                const title = el.getAttribute('data-title') || '';
+                const ref = el.getAttribute('data-ref') || '';
+
+                let matches = title.includes(query);
+                if (!matches && ref) {
+                    const indexed = searchIndex.find(s => s.id === ref);
+                    if (indexed && indexed.content.includes(query)) matches = true;
+                }
+
+                if (matches) {
+                    // Show item
+                    el.classList.remove('hidden');
+
+                    // Show all parents
+                    let parentGroup = el.closest('.folder-children');
+                    while (parentGroup) {
+                        parentGroup.classList.remove('hidden');
+                        const folderNodeId = parentGroup.getAttribute('data-parent-id');
+                        if (folderNodeId) {
+                            const folderNode = document.getElementById(folderNodeId);
+                            if (folderNode) {
+                                folderNode.classList.remove('hidden');
+                                const toggleIcon = folderNode.querySelector('.folder-toggle-icon');
+                                if (toggleIcon) toggleIcon.style.transform = 'rotate(90deg)';
+                            }
+                        }
+                        parentGroup = parentGroup.parentElement?.closest('.folder-children');
+                    }
+                }
+            });
+        }
+
+        let nodeIdCounter = 0;
+
         function buildTree(nodes, container, depth = 0) {
             Array.from(nodes).forEach(node => {
                 const title = node.querySelector('title')?.textContent || "Untitled";
                 const ref = node.getAttribute('identifierref');
                 const children = Array.from(node.children).filter(c => c.tagName === 'item');
+                nodeIdCounter++;
+                const nodeId = `tree-node-${nodeIdCounter}`;
                 
                 const el = document.createElement('div');
-                el.className = `flex items-center gap-3 p-3 rounded-xl cursor-pointer transition-colors hover:bg-slate-50 mb-1`;
+                el.id = nodeId;
+                el.className = `tree-node flex items-center gap-3 p-3 rounded-xl cursor-pointer transition-colors hover:bg-slate-50 mb-1`;
                 el.style.marginLeft = `${depth * 12}px`;
+                el.setAttribute('data-title', title.toLowerCase());
+                if (ref) el.setAttribute('data-ref', ref);
                 
                 const icon = children.length > 0 ? 'folder' : getIcon(ref);
                 const iconColor = children.length > 0 ? 'text-amber-400' : 'text-slate-400';
                 
-                el.innerHTML = `<i data-lucide="${icon}" class="w-4 h-4 shrink-0 ${iconColor}"></i>
+                let chevron = '';
+                if (children.length > 0) {
+                    chevron = `<i data-lucide="chevron-right" class="w-3 h-3 text-slate-300 folder-toggle-icon transition-transform"></i>`;
+                }
+
+                el.innerHTML = `${chevron}<i data-lucide="${icon}" class="w-4 h-4 shrink-0 ${iconColor}"></i>
                                <span class="text-xs font-semibold text-slate-700 truncate">${title}</span>`;
                 
-                if (ref) {
+                container.appendChild(el);
+
+                let childrenContainer = null;
+                if (children.length > 0) {
+                    childrenContainer = document.createElement('div');
+                    childrenContainer.className = 'folder-children hidden';
+                    childrenContainer.setAttribute('data-parent-id', nodeId);
+                    container.appendChild(childrenContainer);
+                    buildTree(children, childrenContainer, depth + 1);
+                }
+
+                if (ref && children.length === 0) {
                     el.onclick = async (e) => { 
                         e.stopPropagation(); 
                         const loader = document.getElementById('loading-overlay');
-                        // Show generic loading if it takes time
                         const timer = setTimeout(() => loader.classList.remove('hidden'), 500);
                         try {
                             await loadResource(el, ref, title);
@@ -354,10 +461,19 @@
                             loader.classList.add('hidden');
                         }
                     };
+                } else if (children.length > 0) {
+                    el.onclick = (e) => {
+                        e.stopPropagation();
+                        const isHidden = childrenContainer.classList.contains('hidden');
+                        if (isHidden) {
+                            childrenContainer.classList.remove('hidden');
+                            el.querySelector('.folder-toggle-icon').style.transform = 'rotate(90deg)';
+                        } else {
+                            childrenContainer.classList.add('hidden');
+                            el.querySelector('.folder-toggle-icon').style.transform = 'rotate(0deg)';
+                        }
+                    };
                 }
-                
-                container.appendChild(el);
-                if (children.length > 0) buildTree(children, container, depth + 1);
             });
         }
 
@@ -453,19 +569,45 @@
             }
 
             // Handler: Web Links (IMS WL)
-            if (res.type && (res.type.includes('imswl') || res.type === 'webcontent' && res.href.endsWith('.xml'))) {
+            if (res.type && (res.type.includes('imswl') || res.type === 'webcontent' && (res.href.endsWith('.xml') || res.href.endsWith('.html')))) {
                 try {
-                    const xmlText = await currentZip.file(res.href).async("string");
-                    const xmlDoc = new DOMParser().parseFromString(xmlText, "text/xml");
-                    // Try standard IMS WL locations or Schoology variations
-                    let url = xmlDoc.querySelector('url')?.getAttribute('href') || 
+                    let url = null;
+                    const fileContent = await currentZip.file(res.href).async("string");
+
+                    if (res.href.endsWith('.html')) {
+                        // Sometimes links are exported as HTML files containing a redirect
+                        const htmlDoc = new DOMParser().parseFromString(fileContent, "text/html");
+                        const metaRefresh = htmlDoc.querySelector('meta[http-equiv="refresh"]');
+                        if (metaRefresh) {
+                            const contentAttr = metaRefresh.getAttribute('content') || '';
+                            const urlMatch = contentAttr.match(/url=([^;]+)/i);
+                            if (urlMatch) url = urlMatch[1];
+                        }
+                        if (!url) {
+                            // Look for window.location
+                            const match = fileContent.match(/window\.location(?:\.href)?\s*=\s*['"](.*?)['"]/);
+                            if (match) url = match[1];
+                        }
+
+                        // If we didn't find a redirect URL in the HTML, let it fall through to normal HTML handling.
+                        if (!url && res.type === 'webcontent') {
+                             // Do nothing, let it be handled as standard HTML later
+                        } else if (url) {
+                            // Valid link found in HTML
+                        } else {
+                            // Could not find a link, force fallback or let it process as HTML
+                        }
+                    } else {
+                        // Standard XML parsing
+                        const xmlDoc = new DOMParser().parseFromString(fileContent, "text/xml");
+                        url = xmlDoc.querySelector('url')?.getAttribute('href') ||
                               xmlDoc.querySelector('check_link_url')?.getAttribute('href') ||
                               xmlDoc.querySelector('iframe_url')?.getAttribute('href');
-                    
-                    if (!url && xmlText.includes('http')) {
-                         // Fallback simple regex if XML parsing fails
-                         const match = xmlText.match(/https?:\/\/[^"'\s<]+/);
-                         if (match) url = match[0];
+
+                        if (!url && fileContent.includes('http')) {
+                             const match = fileContent.match(/https?:\/\/[^"'\s<]+/);
+                             if (match) url = match[0];
+                        }
                     }
 
                     if (url) {
@@ -543,10 +685,12 @@
                     doc.head.insertBefore(meta, doc.head.firstChild);
                 }
                 
-                // Relink Assets
+                // Relink Assets & Track Embedded Attachments
                 const selectors = 'img[src], video[src], audio[src], source[src], link[rel="stylesheet"], script[src], a[href]';
                 const nodes = Array.from(doc.querySelectorAll(selectors));
                 
+                const embeddedPaths = new Set();
+
                 for (const node of nodes) {
                     const attr = node.tagName === 'LINK' || node.tagName === 'A' ? 'href' : 'src';
                     const val = node.getAttribute(attr);
@@ -556,16 +700,16 @@
                         const assetFile = currentZip.file(solvedPath);
                         
                         if (assetFile) {
+                            // If it's an image or media embedded, we track it so we don't show it as an external attachment
+                            if (node.tagName !== 'A' && node.tagName !== 'LINK') {
+                                embeddedPaths.add(solvedPath);
+                            }
+
                             if (node.tagName === 'A') {
-                                // For links to other HTML/PDFs, we can't easily blob them inside an iframe 
-                                // without intercepting navigation. For now, we'll mark them to download 
-                                // or if it's an image/media link, blob it.
-                                // Improvement: Add a click handler to intercept internal navigation?
-                                // For now, let's leave internal relative links to download behavior if clicked?
-                                // Actually, standard behavior for relative links in blob iframe is broken.
-                                // We can try to bind a click listener to the iframe content?
+                                // For links to other files inside the zip
                                 node.style.textDecoration = "underline";
                                 node.style.color = "blue";
+                                node.onclick = () => alert('Internal zip links are disabled in preview. Please find the file in the sidebar.');
                             } else {
                                 const assetBlob = await assetFile.async("blob");
                                 let mime = assetFile.name.endsWith('css') ? 'text/css' : 
@@ -583,6 +727,17 @@
                 iframe.classList.remove('hidden');
                 placeholder.classList.add('hidden');
                 openWindowBtn.classList.remove('hidden');
+
+                // Update attachments footer to hide embedded files
+                if (res.files && res.files.length > 0) {
+                    const standaloneAttachments = res.files.filter(f => f !== res.href && !embeddedPaths.has(f));
+                    if (standaloneAttachments.length > 0) {
+                        attachmentsFooter.classList.remove('hidden');
+                        renderAttachments(standaloneAttachments);
+                    } else {
+                        attachmentsFooter.classList.add('hidden');
+                    }
+                }
             }
             // Handler: Images
             else if (['png', 'jpg', 'jpeg', 'gif', 'svg', 'webp'].includes(ext)) {
@@ -592,6 +747,132 @@
                 placeholder.classList.remove('hidden');
                 iframe.classList.add('hidden');
                 downloadBtn.classList.remove('hidden');
+            }
+            // Handler: Quizzes/Tests (QTI)
+            else if (res.type && res.type.includes('imsqti')) {
+                let xmlText = await file.async("string");
+                const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
+
+                let title = doc.querySelector('title')?.textContent || doc.querySelector('assessment')?.getAttribute('title') || res.title || "Quiz / Test";
+
+                let htmlOutput = `
+                    <div class="p-8 bg-white rounded-2xl shadow-sm border border-slate-200 text-left max-w-3xl mx-auto w-full my-8">
+                        <div class="flex items-center gap-3 mb-8 pb-4 border-b border-slate-100">
+                            <div class="p-2 bg-indigo-50 text-indigo-500 rounded-lg">
+                                <i data-lucide="check-square" class="w-6 h-6"></i>
+                            </div>
+                            <h2 class="text-xl font-bold text-slate-800">${title}</h2>
+                        </div>
+                        <div class="space-y-8">
+                `;
+
+                // Generic extraction strategy for QTI items
+                const items = doc.querySelectorAll('item');
+                if (items.length > 0) {
+                    items.forEach((item, index) => {
+                        // Try to find the prompt/question
+                        let promptNode = item.querySelector('presentation > material > mattext') || item.querySelector('prompt') || item.querySelector('mattext');
+                        let promptHtml = promptNode ? (promptNode.textContent || promptNode.innerHTML) : "Question text not found.";
+
+                        // Clean upCDATA
+                        promptHtml = promptHtml.replace(/<!\[CDATA\[/g, '').replace(/]]>/g, '');
+                        if (!promptHtml.includes('<')) promptHtml = promptHtml.replace(/\n/g, '<br>');
+
+                        htmlOutput += `
+                            <div class="p-4 bg-slate-50 rounded-xl border border-slate-100">
+                                <h3 class="text-sm font-bold text-slate-700 mb-4"><span class="text-indigo-500 mr-2">Q${index + 1}.</span>${promptHtml}</h3>
+                                <div class="space-y-2 pl-6">
+                        `;
+
+                        // Try to find choices
+                        const choices = item.querySelectorAll('response_label');
+                        if (choices.length > 0) {
+                            choices.forEach(choice => {
+                                let choiceNode = choice.querySelector('mattext') || choice;
+                                let choiceHtml = choiceNode.textContent || choiceNode.innerHTML;
+                                choiceHtml = choiceHtml.replace(/<!\[CDATA\[/g, '').replace(/]]>/g, '');
+
+                                htmlOutput += `
+                                    <div class="flex items-start gap-3 p-3 bg-white rounded-lg border border-slate-200">
+                                        <div class="mt-0.5 w-4 h-4 rounded-full border border-slate-300 flex-shrink-0"></div>
+                                        <div class="text-xs text-slate-600">${choiceHtml}</div>
+                                    </div>
+                                `;
+                            });
+                        } else {
+                            // Essay or other generic question type fallback
+                            htmlOutput += `
+                                <div class="p-3 bg-white rounded-lg border border-slate-200 border-dashed text-slate-400 text-xs italic">
+                                    Student response area.
+                                </div>
+                            `;
+                        }
+
+                        htmlOutput += `</div></div>`;
+                    });
+                } else {
+                    // Fallback if no <item> tags
+                    htmlOutput += `<p class="text-slate-500 text-sm">No standard question items found in this assessment.</p>`;
+                }
+
+                htmlOutput += `</div></div>`;
+
+                iframe.classList.add('hidden');
+                placeholder.innerHTML = htmlOutput;
+                placeholder.classList.remove('hidden');
+                lucide.createIcons();
+            }
+            // Handler: Discussions
+            else if (res.type && res.type.includes('imsdt')) {
+                let xmlText = await file.async("string");
+                const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
+
+                // Extract generic text from all nodes to ensure we don't miss content due to schema variations
+                let textContent = "";
+                const extractText = (node) => {
+                    if (node.nodeType === 3) {
+                        const val = node.nodeValue.trim();
+                        if (val) textContent += val + "<br><br>";
+                    } else if (node.nodeType === 1) {
+                        // Avoid repeating raw XML tag contents that aren't useful, but since we are just trying to get human text:
+                        if (['title', 'text', 'mattext', 'html', 'p', 'div', 'span', 'b', 'i', 'strong', 'em'].includes(node.tagName.toLowerCase())) {
+                             node.childNodes.forEach(extractText);
+                        } else if (node.tagName.toLowerCase() !== 'topic') {
+                             node.childNodes.forEach(extractText);
+                        }
+                    }
+                };
+
+                // Better strategy: try to find standard content tags, else fallback
+                let title = doc.querySelector('title')?.textContent || res.title || "Discussion Post";
+                let textNode = doc.querySelector('text') || doc.querySelector('html') || doc.querySelector('mattext');
+
+                let displayHtml = "";
+                if (textNode) {
+                    displayHtml = textNode.textContent || textNode.innerHTML || textNode.innerHTML;
+                    if (textNode.tagName.toLowerCase() !== 'html' && !displayHtml.includes('<')) {
+                         displayHtml = displayHtml.replace(/\n/g, '<br>');
+                    }
+                } else {
+                    doc.childNodes.forEach(extractText);
+                    displayHtml = textContent || "No discussion prompt available.";
+                }
+
+                iframe.classList.add('hidden');
+                placeholder.innerHTML = `
+                    <div class="p-8 bg-white rounded-2xl shadow-sm border border-slate-200 text-left max-w-2xl mx-auto w-full my-8">
+                        <div class="flex items-center gap-3 mb-6 pb-4 border-b border-slate-100">
+                            <div class="p-2 bg-blue-50 text-blue-500 rounded-lg">
+                                <i data-lucide="message-square" class="w-6 h-6"></i>
+                            </div>
+                            <h2 class="text-lg font-bold text-slate-800">${title}</h2>
+                        </div>
+                        <div class="prose prose-sm prose-slate max-w-none">
+                            ${displayHtml}
+                        </div>
+                    </div>`;
+                placeholder.classList.remove('hidden');
+                lucide.createIcons();
             }
             // Handler: Generic
             else {
