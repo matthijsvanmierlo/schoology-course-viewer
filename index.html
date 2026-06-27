@@ -261,7 +261,7 @@
                 organizations = Array.from(doc.querySelectorAll('organization')).map(org => {
                     return {
                         id: org.getAttribute('identifier'),
-                        title: org.querySelector('title')?.textContent || "Unnamed Collection",
+                        title: Array.from(org.children).find(c => c.tagName === 'title')?.textContent || "Unnamed Collection",
                         type: "Course",
                         items: Array.from(org.children).filter(c => c.tagName === 'item')
                     };
@@ -719,16 +719,36 @@
                 downloadBtn.classList.remove('hidden');
                 lucide.createIcons();
             }
-                        // Handler: Assignments
+            // Handler: Assignments
             else if (res.type && res.type.toLowerCase().includes('assignment')) {
-                let html = await file.async("string");
-                const doc = new DOMParser().parseFromString(html, 'text/html');
+                let xmlText = await file.async("string");
+                const xmlDoc = new DOMParser().parseFromString(xmlText, 'text/xml');
+
+                let assignmentTitle = xmlDoc.querySelector('title')?.textContent;
+                let textNode = xmlDoc.querySelector('text');
+                let htmlContent = textNode ? (textNode.textContent || textNode.innerHTML) : "";
+                // Sometimes CDATA tags are left in textContent by DOMParser for XML depending on implementation
+                htmlContent = htmlContent.replace(/<!\[CDATA\[/g, '').replace(/]]>/g, '');
+
+                const doc = new DOMParser().parseFromString(htmlContent, 'text/html');
 
                 if (!doc.head.querySelector('meta[charset]')) {
                     const meta = document.createElement('meta');
                     meta.setAttribute('charset', 'UTF-8');
                     doc.head.insertBefore(meta, doc.head.firstChild);
                 }
+
+                // Extract attachments defined in XML
+                const xmlAttachments = xmlDoc.querySelectorAll('attachment');
+                xmlAttachments.forEach(att => {
+                    const href = att.getAttribute('href');
+                    if (href) {
+                        const resolvedPath = resolvePath(res.href, href);
+                        if (resolvedPath && currentZip.file(resolvedPath)) {
+                            allAttachments.push({ type: 'file', path: resolvedPath, name: resolvedPath.split('/').pop() });
+                        }
+                    }
+                });
 
                 const selectors = 'img[src], video[src], audio[src], source[src], link[rel="stylesheet"], script[src], a[href]';
                 const nodes = Array.from(doc.querySelectorAll(selectors));
@@ -769,7 +789,7 @@
                     }
                 }
 
-                let docTitle = title || doc.title || "Assignment";
+                let docTitle = assignmentTitle || title || doc.title || "Assignment";
                 let displayHtml = doc.body ? doc.body.innerHTML : doc.documentElement.innerHTML;
 
                 let htmlOutput = `
@@ -791,7 +811,18 @@
                 placeholder.classList.remove('hidden');
 
                 if (allAttachments && allAttachments.length > 0) {
-                    const standaloneAttachments = allAttachments.filter(a => a.type !== 'file' || !embeddedPaths.has(a.path));
+                    // Deduplicate attachments by path/url
+                    const seen = new Set();
+                    const uniqueAttachments = [];
+                    allAttachments.forEach(a => {
+                        const id = a.type === 'file' ? a.path : a.url;
+                        if (!seen.has(id)) {
+                            seen.add(id);
+                            uniqueAttachments.push(a);
+                        }
+                    });
+
+                    const standaloneAttachments = uniqueAttachments.filter(a => a.type !== 'file' || !embeddedPaths.has(a.path));
                     if (standaloneAttachments.length > 0) {
                         attachmentsFooter.classList.remove('hidden');
                         renderAttachments(standaloneAttachments);
