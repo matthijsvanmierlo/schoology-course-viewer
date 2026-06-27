@@ -258,14 +258,45 @@
                     };
                 });
 
+                // Extract course title robustly
+                let courseTitle = "Unnamed Collection";
+
+                // Try LOM metadata title
+                const strings = doc.getElementsByTagNameNS('*', 'string');
+                for (let s of strings) {
+                    if (s.parentNode && s.parentNode.localName === 'title') {
+                        courseTitle = s.textContent;
+                        break;
+                    }
+                }
+
+                // Fallback to top-level title not inside an item or resource
+                if (courseTitle === "Unnamed Collection") {
+                    const titles = doc.getElementsByTagNameNS('*', 'title');
+                    for (let t of titles) {
+                        if (!t.closest('item') && !t.closest('resource')) {
+                            courseTitle = t.textContent;
+                            break;
+                        }
+                    }
+                }
+
+                // Fallback to filename
+                if (courseTitle === "Unnamed Collection" && file.name) {
+                    courseTitle = file.name.replace(/\.[^/.]+$/, "");
+                }
+
                 organizations = Array.from(doc.querySelectorAll('organization')).map(org => {
                     return {
                         id: org.getAttribute('identifier'),
-                        title: Array.from(org.children).find(c => c.tagName === 'title')?.textContent || "Unnamed Collection",
+                        title: courseTitle,
                         type: "Course",
                         items: Array.from(org.children).filter(c => c.tagName === 'item')
                     };
                 });
+
+                // Store course title globally so we can use it in buildTree fallback
+                window._currentCourseTitle = courseTitle;
 
                 document.getElementById('dropzone').classList.add('hidden');
 
@@ -413,7 +444,15 @@
 
         function buildTree(nodes, container, depth = 0) {
             Array.from(nodes).forEach(node => {
-                const title = node.querySelector('title')?.textContent || "Untitled";
+                let titleNode = Array.from(node.children).find(c => c.tagName === 'title');
+                let title = titleNode ? titleNode.textContent : null;
+
+                if (!title && depth === 0 && window._currentCourseTitle) {
+                    title = window._currentCourseTitle;
+                }
+
+                title = title || "Untitled";
+
                 const ref = node.getAttribute('identifierref');
                 const children = Array.from(node.children).filter(c => c.tagName === 'item');
                 nodeIdCounter++;
@@ -505,10 +544,17 @@
 
         function resolvePath(basePath, relativePath) {
             if (!relativePath) return null;
+
+            try {
+                relativePath = decodeURIComponent(relativePath);
+            } catch (e) {
+                // Ignore malformed URIs
+            }
+
             // Absolute or data/hash links
             if (relativePath.match(/^(http|https|data|blob|mailto|#|\/):/)) return relativePath;
             
-            // Normalize path separators
+            // 1. Try standard relative resolution
             const baseDir = basePath.substring(0, basePath.lastIndexOf('/'));
             const parts = baseDir.split('/').filter(p => p !== '');
             const relParts = relativePath.split('/').filter(p => p !== '');
@@ -522,7 +568,22 @@
                 }
             }
             
-            return parts.join('/');
+            let standardPath = parts.join('/');
+            if (currentZip && currentZip.file(standardPath)) return standardPath;
+
+            // 2. Try resolving from archive root
+            let rootPath = relativePath.startsWith('/') ? relativePath.substring(1) : relativePath;
+            if (currentZip && currentZip.file(rootPath)) return rootPath;
+
+            // 3. Brute force search by filename
+            if (currentZip) {
+                const targetFilename = relativePath.split('/').pop();
+                const allFiles = Object.keys(currentZip.files);
+                const found = allFiles.find(f => f.split('/').pop() === targetFilename);
+                if (found) return found;
+            }
+
+            return standardPath; // fallback to standard if nothing else works
         }
 
         function openInNewWindow() {
@@ -769,6 +830,9 @@
                             }
 
                             if (node.tagName === 'A') {
+                                // Expose linked internal files to attachments footer
+                                allAttachments.push({ type: 'file', path: solvedPath, name: solvedPath.split('/').pop() });
+
                                 const assetBlob = await assetFile.async("blob");
                                 const url = URL.createObjectURL(assetBlob);
                                 assetBlobs.push(url);
@@ -867,6 +931,9 @@
                             }
 
                             if (node.tagName === 'A') {
+                                // Expose linked internal files to attachments footer
+                                allAttachments.push({ type: 'file', path: solvedPath, name: solvedPath.split('/').pop() });
+
                                 const assetBlob = await assetFile.async("blob");
                                 const url = URL.createObjectURL(assetBlob);
                                 assetBlobs.push(url);
