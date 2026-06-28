@@ -481,7 +481,17 @@
                 if (ref) el.setAttribute('data-ref', ref);
                 
                 const icon = children.length > 0 ? 'folder' : getIcon(ref);
-                const iconColor = children.length > 0 ? 'text-amber-400' : 'text-slate-400';
+                let iconColor = 'text-slate-400';
+                if (children.length > 0) {
+                    iconColor = 'text-amber-400';
+                } else if (ref) {
+                    const rt = resources[ref]?.type || '';
+                    const rh = resources[ref]?.href || '';
+                    if (rt.includes('associatedcontent')) iconColor = 'text-teal-500';
+                    else if (rt.includes('assignment') || (resources[ref]?.intendeduse === 'assignment')) iconColor = 'text-purple-400';
+                    else if (rt.includes('imswl') || (rt.includes('webcontent') && rh.endsWith('/'))) iconColor = 'text-indigo-400';
+                    else if (rt.includes('imsdt')) iconColor = 'text-blue-400';
+                }
                 
                 let chevron = '';
                 if (children.length > 0) {
@@ -1048,7 +1058,7 @@
             const attachmentsFooter = document.getElementById('attachments-footer');
 
             document.getElementById('active-title').innerText = title;
-            document.getElementById('active-type').innerText = res.type || 'Resource';
+            document.getElementById('active-type').innerText = getFriendlyType(res.type, res.intendeduse, res.href);
 
             // Handle Attachments
             let allAttachments = [];
@@ -1170,13 +1180,85 @@
             }
 
             // Check if main file exists
-            const file = currentZip.file(res.href);
+            // res.href ending with '/' means an empty directory export — Schoology sometimes
+            // exports web links as webcontent with a bare directory and no XML inside.
+            const isEmptyDirHref = res.href && res.href.endsWith('/');
+            const file = isEmptyDirHref ? null : currentZip.file(res.href);
             if (!file) {
-                placeholder.innerHTML = `<div class="text-center p-6 text-slate-400">
-                    <i data-lucide="file-x" class="w-8 h-8 mx-auto mb-2"></i>
-                    <p>File not found in package.</p>
-                </div>`;
+                // Attempt to resolve broken/missing web link export by title-matching course web links
+                const courseWebLinks = await getCourseWebLinks();
+                const matched = courseWebLinks.find(l => matchesTitle(l.title, title));
+
+                if (matched) {
+                    // Found a matching web link — show it directly
+                    const url = matched.url;
+                    currentSelection.href = url;
+                    currentSelection.type = 'link';
+                    placeholder.innerHTML = `
+                        <div class="p-8 bg-white rounded-2xl shadow-sm border border-slate-200 text-center max-w-sm mx-auto">
+                            <i data-lucide="link" class="w-10 h-10 text-blue-500 mx-auto mb-4"></i>
+                            <h3 class="text-sm font-bold mb-2">External Link</h3>
+                            <p class="text-xs text-slate-400 mb-6 truncate max-w-xs mx-auto">${url}</p>
+                            <a href="${url}" target="_blank" class="inline-flex items-center gap-2 bg-blue-600 text-white px-6 py-2.5 rounded-xl font-bold text-xs shadow-md active:scale-95 transition-all">
+                                Open Website
+                                <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
+                            </a>
+                        </div>`;
+                    placeholder.classList.remove('hidden');
+                    iframe.classList.add('hidden');
+                    lucide.createIcons();
+                    return;
+                }
+
+                // No automatic match — show explanation + search widget
+                placeholder.innerHTML = `
+                    <div class="p-8 bg-white rounded-2xl shadow-sm border border-slate-200 text-left max-w-2xl mx-auto w-full my-8">
+                        <div class="flex items-center gap-3 mb-5 pb-4 border-b border-slate-100">
+                            <div class="p-2 bg-orange-50 text-orange-400 rounded-lg shrink-0">
+                                <i data-lucide="link-2-off" class="w-6 h-6"></i>
+                            </div>
+                            <div class="min-w-0">
+                                <p class="text-sm font-bold text-slate-800 truncate">${title}</p>
+                                <p class="text-xs text-slate-400 mt-0.5">Link not included in export file</p>
+                            </div>
+                        </div>
+                        <p class="text-xs text-slate-500 mb-4 leading-relaxed">Schoology exported this item without its link data. Search the ${courseWebLinks.length} course web links below to find the right one.</p>
+                        <input id="orphan-search-input" type="text" value="${title.replace(/"/g, '&quot;')}" placeholder="Search course web links…"
+                               class="w-full px-3 py-2 text-sm border border-slate-200 rounded-xl mb-3 focus:outline-none focus:ring-2 focus:ring-orange-200 focus:border-orange-300 bg-white">
+                        <div id="orphan-search-results" class="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-64 overflow-y-auto pr-1"></div>
+                    </div>`;
+                placeholder.className = "absolute inset-0 overflow-y-auto bg-slate-50 z-0 p-4 sm:p-8 block";
+                placeholder.classList.remove('hidden');
+                iframe.classList.add('hidden');
                 lucide.createIcons();
+
+                const searchInput = placeholder.querySelector('#orphan-search-input');
+                const resultsDiv = placeholder.querySelector('#orphan-search-results');
+                const renderOrphanLinks = (query) => {
+                    const q = query.toLowerCase().trim();
+                    const filtered = q ? courseWebLinks.filter(l => l.title.toLowerCase().includes(q)) : courseWebLinks;
+                    resultsDiv.innerHTML = filtered.map(l => {
+                        const safeUrl = l.url.replace(/'/g, "\\'");
+                        const safeTitle = l.title.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+                        const lowerUrl = l.url.toLowerCase();
+                        let icon = 'link', iconColor = 'text-indigo-400';
+                        if (lowerUrl.includes('docs.google.com/document')) { icon = 'file-text'; iconColor = 'text-blue-400'; }
+                        else if (lowerUrl.includes('docs.google.com/presentation')) { icon = 'presentation'; iconColor = 'text-amber-400'; }
+                        else if (lowerUrl.includes('docs.google.com/forms')) { icon = 'check-square'; iconColor = 'text-purple-400'; }
+                        else if (lowerUrl.includes('youtube.com') || lowerUrl.includes('youtu.be')) { icon = 'video'; iconColor = 'text-red-400'; }
+                        else if (lowerUrl.includes('drive.google.com')) { icon = 'hard-drive'; iconColor = 'text-green-400'; }
+                        return `<div onclick="window.open('${safeUrl}','_blank')" class="flex items-center gap-2.5 p-2.5 rounded-lg border border-slate-100 hover:bg-orange-50 hover:border-orange-200 cursor-pointer transition-colors group">
+                            <i data-lucide="${icon}" class="w-3.5 h-3.5 shrink-0 ${iconColor}"></i>
+                            <div class="min-w-0 flex-1">
+                                <p class="text-[11px] font-semibold text-slate-700 group-hover:text-orange-700 truncate">${safeTitle}</p>
+                            </div>
+                            <i data-lucide="external-link" class="w-3 h-3 shrink-0 text-slate-300 group-hover:text-orange-400"></i>
+                        </div>`;
+                    }).join('');
+                    lucide.createIcons({ el: resultsDiv });
+                };
+                renderOrphanLinks(title);
+                searchInput.addEventListener('input', e => renderOrphanLinks(e.target.value));
                 return;
             }
 
@@ -1639,6 +1721,88 @@
                     }
                 }
             }
+            // Handler: Pages (associatedcontent/imscc_xmlv1p2/learning-application-resource)
+            else if (res.type && res.type.includes('associatedcontent')) {
+                let fileContent = await file.async("string");
+                let docTitle = title || "Page";
+                const embeddedPaths = new Set();
+
+                // Page content may be a full HTML doc or just an HTML fragment
+                const isFullDoc = fileContent.trim().toLowerCase().startsWith('<!doctype') ||
+                                  fileContent.toLowerCase().includes('<html');
+                const doc = new DOMParser().parseFromString(
+                    isFullDoc ? fileContent : `<html><body>${fileContent}</body></html>`,
+                    'text/html'
+                );
+
+                // Relink embedded media assets
+                const mediaNodes = Array.from(doc.querySelectorAll('img[src], video[src], audio[src], source[src]'));
+                for (const node of mediaNodes) {
+                    const val = node.getAttribute('src');
+                    if (val && !val.startsWith('http') && !val.startsWith('#') && !val.startsWith('data:')) {
+                        const solvedPath = resolvePath(res.href, val);
+                        const assetFile = currentZip.file(solvedPath) || currentZip.file(solvedPath.replace(/^\//, ''));
+                        if (assetFile) {
+                            embeddedPaths.add(solvedPath);
+                            const assetBlob = await assetFile.async("blob");
+                            const blobUrl = URL.createObjectURL(new Blob([assetBlob], { type: assetBlob.type }));
+                            assetBlobs.push(blobUrl);
+                            node.setAttribute('src', blobUrl);
+                        }
+                    }
+                }
+
+                // Relink inline links
+                const bodyLinks = Array.from(doc.querySelectorAll('a[href]'));
+                for (const node of bodyLinks) {
+                    const val = node.getAttribute('href');
+                    if (!val || val.startsWith('http') || val.startsWith('#') || val.startsWith('mailto:')) continue;
+                    const solvedPath = resolvePath(res.href, val);
+                    if (solvedPath) {
+                        const linkText = node.textContent.trim().replace(/\s+/g, ' ') || '';
+                        const details = await getAttachmentDetails(solvedPath, linkText, '');
+                        if (details && details.type === 'link') {
+                            node.setAttribute('href', details.url);
+                            node.setAttribute('target', '_blank');
+                        } else if (details && details.type === 'file') {
+                            const assetFile = currentZip.file(details.path) || currentZip.file(details.path.replace(/^\//, ''));
+                            if (assetFile) {
+                                const assetBlob = await assetFile.async("blob");
+                                const blobUrl = URL.createObjectURL(assetBlob);
+                                assetBlobs.push(blobUrl);
+                                node.setAttribute('href', blobUrl);
+                                node.setAttribute('target', '_blank');
+                                node.setAttribute('download', details.name);
+                            }
+                        }
+                    }
+                }
+
+                const displayHtml = doc.body ? doc.body.innerHTML : doc.documentElement.innerHTML;
+
+                const htmlOutput = `
+                    <div class="p-8 bg-white rounded-2xl shadow-sm border border-slate-200 text-left max-w-3xl mx-auto w-full my-8">
+                        <div class="flex items-center gap-3 mb-6 pb-4 border-b border-slate-100">
+                            <div class="p-2.5 bg-teal-50 text-teal-500 rounded-lg shadow-sm shrink-0">
+                                <i data-lucide="book-open" class="w-6 h-6"></i>
+                            </div>
+                            <div class="min-w-0 flex-1">
+                                <span class="px-2 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider bg-teal-100 text-teal-700 mb-1 inline-block">Page</span>
+                                <h2 class="text-lg sm:text-xl font-bold text-slate-800">${docTitle}</h2>
+                            </div>
+                        </div>
+                        <div class="prose prose-sm prose-slate max-w-none text-slate-600 leading-relaxed">
+                            ${displayHtml}
+                        </div>
+                    </div>`;
+
+                iframe.classList.add('hidden');
+                placeholder.innerHTML = htmlOutput;
+                placeholder.className = "absolute inset-0 overflow-y-auto bg-slate-50 z-0 p-4 sm:p-8 block";
+                placeholder.classList.remove('hidden');
+                attachmentsFooter.classList.add('hidden');
+                lucide.createIcons();
+            }
             // Handler: HTML
             else if (['html', 'htm'].includes(ext)) {
                 let html = await file.async("string");
@@ -1932,16 +2096,31 @@
             lucide.createIcons();
         }
 
+        function getFriendlyType(type, intendeduse, href) {
+            if (!type) return 'Resource';
+            if (type.includes('associatedcontent')) return 'Page';
+            if (type.includes('assignment') || intendeduse === 'assignment') return 'Assignment';
+            if (type.includes('imswl')) return 'Web Link';
+            if (type.includes('imsdt')) return 'Discussion';
+            if (type.includes('imsqti')) return 'Assessment';
+            if (type.includes('imsbasiclti')) return 'External Tool';
+            if (type === 'webcontent' && href && href.endsWith('/')) return 'Web Link';
+            if (type === 'webcontent') return 'File';
+            return type;
+        }
+
         function getIcon(ref) {
             if (!ref) return 'folder';
             const t = resources[ref]?.type || '';
             if (t.includes('assignment')) return 'clipboard-list';
+            if (t.includes('associatedcontent')) return 'book-open';
             if (t.includes('imswl')) return 'link';
             if (t.includes('imsdt')) return 'message-square';
             if (t.includes('webcontent')) {
                 const h = resources[ref]?.href || '';
                 if (h.endsWith('.pdf')) return 'file-text';
                 if (h.endsWith('.jpg') || h.endsWith('.png')) return 'image';
+                if (h.endsWith('/')) return 'link';
             }
             return 'file';
         }
