@@ -1748,31 +1748,10 @@
                 })();
 
                 if (isSgyAttachmentOnly) {
-                    // Try to find a matching web link by title in case any exist in this course
+                    // All broken pages share an identical server-side blob path — there is no
+                    // per-item URL mapping in the export, so title-based guessing would produce
+                    // wrong links. Always show the explanation card with a manual search widget.
                     const courseWebLinks = await getCourseWebLinks();
-                    const matched = courseWebLinks.find(l => matchesTitle(l.title, title));
-
-                    if (matched) {
-                        const url = matched.url;
-                        currentSelection.href = url;
-                        currentSelection.type = 'link';
-                        placeholder.innerHTML = `
-                            <div class="p-8 bg-white rounded-2xl shadow-sm border border-slate-200 text-center max-w-sm mx-auto">
-                                <i data-lucide="link" class="w-10 h-10 text-blue-500 mx-auto mb-4"></i>
-                                <h3 class="text-sm font-bold mb-2">External Link</h3>
-                                <p class="text-xs text-slate-400 mb-6 truncate max-w-xs mx-auto">${url}</p>
-                                <a href="${url}" target="_blank" class="inline-flex items-center gap-2 bg-blue-600 text-white px-6 py-2.5 rounded-xl font-bold text-xs shadow-md active:scale-95 transition-all">
-                                    Open Website
-                                    <i data-lucide="external-link" class="w-3.5 h-3.5"></i>
-                                </a>
-                            </div>`;
-                        placeholder.classList.remove('hidden');
-                        iframe.classList.add('hidden');
-                        lucide.createIcons();
-                        return;
-                    }
-
-                    // No match available — show explanation card
                     const hasWebLinks = courseWebLinks.length > 0;
                     placeholder.innerHTML = `
                         <div class="p-8 bg-white rounded-2xl shadow-sm border border-slate-200 text-left max-w-2xl mx-auto w-full my-8">
